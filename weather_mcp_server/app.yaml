@@ -1,0 +1,14 @@
+command:
+  - "python"
+  - "weather_mcp_server.py"
+
+resources:
+  - name: requirements
+    source:
+      path: ./requirements.txt
+
+# No secrets needed: Open-Meteo is key-less. The same code runs locally and on
+# Databricks Apps unchanged. Add env vars here if you later switch to a
+# provider that needs an API key (keep the key in a Databricks secret, not in
+# this file).
+env: []
