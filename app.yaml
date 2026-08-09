@@ -1,0 +1,11 @@
+command:
+  - "python"
+  - "-m"
+  - "atmos.server"
+
+env:
+  # Databricks apps listen on 8000 by default and expose the MCP endpoint at
+  # /mcp. MCP_PORT pins it explicitly; DATABRICKS_APP_PORT (injected by the
+  # platform) is also honoured by atmos.server.
+  - name: MCP_PORT
+    value: "8000"
