@@ -106,11 +106,17 @@ screenshots):
 **1. "Is it raining in Seattle — should I grab an umbrella?"**
 → `predict_umbrella_needed("Seattle", "today")` → answer yes/no plus the reason.
 
+![Seattle agent demo](docs/Seattle.png)
+
 **2. "What's the outlook for Austin, and is tomorrow a good day to travel?"**
 → `get_forecast("Austin, TX", 3)`, then `get_travel_recommendation("Austin, TX", "tomorrow")`.
 
+![Austin agent demo](docs/Austin.png)
+
 **3. "Which is warmer right now, Chicago, Miami, or Denver?"**
 → `compare_cities(["Chicago", "Miami", "Denver"])` → warmest/driest + conditions.
+
+![Denver agent demo](docs/Denver.png)
 
 ## Notes
 
