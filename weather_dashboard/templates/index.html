@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weather Dashboard - Agent Bricks + Open-Meteo MCP</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 980px; margin: 40px auto; padding: 0 16px; color: #1c1c1e; }
+    h1 { font-size: 1.4rem; }
+    .muted { color: #6b7280; font-size: 0.9rem; }
+    .search { display: flex; gap: 8px; margin: 16px 0 24px; flex-wrap: wrap; }
+    .search input { flex: 1; min-width: 220px; padding: 10px 14px; font-size: 1rem; border: 1px solid #d1d5db; border-radius: 8px; }
+    .search button { padding: 10px 18px; font-size: 0.95rem; border: 1px solid #d1d5db; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+    .cards { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+    .card { flex: 1; min-width: 180px; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; background: #fff; }
+    .card .label { color: #6b7280; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .card .value { font-size: 1.5rem; font-weight: 600; margin-top: 4px; }
+    .card .cond { font-size: 1rem; margin-top: 2px; }
+    h2 { font-size: 1.05rem; margin: 28px 0 12px; }
+    .days { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+    .day { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; text-align: center; }
+    .day .date { font-size: 0.8rem; color: #6b7280; }
+    .day .hi { font-weight: 600; }
+    .advice { border-left: 4px solid #2563eb; background: #eff6ff; padding: 12px 16px; border-radius: 0 10px 10px 0; margin-top: 8px; }
+    .advice ul { margin: 6px 0 0; padding-left: 20px; }
+    .verdict { display: inline-block; border-radius: 999px; padding: 3px 12px; font-weight: 600; font-size: 0.85rem; margin-left: 8px; }
+    .verdict.yes { background: #fee2e2; color: #b91c1c; }
+    .verdict.maybe { background: #fef3c7; color: #b45309; }
+    .verdict.no { background: #dcfce7; color: #15803d; }
+    .error { color: #b91c1c; background: #fee2e2; padding: 10px 14px; border-radius: 8px; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #f3f4f6; font-size: 0.9rem; }
+    th { color: #6b7280; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <h1>☀️ Weather Dashboard</h1>
+  <p class="muted">Mirrors the exact tools the Agent Bricks agent calls through the
+    weather-prediction MCP server (Open-Meteo, no API key). Pick a city below - same data,
+    same recommendation thresholds.</p>
+
+  <div class="search">
+    <input id="location" placeholder="City, e.g. Chicago" value="{{ default_city }}">
+    <button id="go">Look up</button>
+  </div>
+
+  <div id="error"></div>
+
+  <div class="cards">
+    <div class="card"><div class="label">Now</div><div class="value" id="now-temp">-</div><div class="cond" id="now-cond"></div></div>
+    <div class="card"><div class="label">Feels like</div><div class="value" id="now-feels">-</div></div>
+    <div class="card"><div class="label">Humidity / Wind</div><div class="value" id="now-humidity">-</div><div class="cond" id="now-wind"></div></div>
+    <div class="card"><div class="label">Umbrella?</div><div class="value"><span class="verdict" id="umbrella-verdict">-</span></div><div class="cond muted" id="umbrella-reason"></div></div>
+  </div>
+
+  <h2>7-day forecast</h2>
+  <div class="days" id="forecast"></div>
+
+  <h2>Travel recommendation <span id="rec-date" class="muted"></span></h2>
+  <div id="recommendation"></div>
+
+  <h2>Recent lookups on this dashboard</h2>
+  <table>
+    <thead><tr><th>When (UTC)</th><th>Location</th><th>Kind</th></tr></thead>
+    <tbody id="recent-body"></tbody>
+  </table>
+
+  <script>
+    const locEl = document.getElementById('location');
+    const fmtTemp = (v, unit) => v == null ? '-' : `${v}°${(unit || '').includes('F') ? 'F' : 'C'}`;
+
+    async function getJSON(path) {
+      const r = await fetch(path);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || r.statusText);
+      return data;
+    }
+
+    function renderCurrent(data) {
+      const loc = data.location ? `${data.location.name}, ${data.location.region || ''}`.trim().replace(/,$/, '') : '';
+      const u = data.units ? data.units.temperature : '°C';
+      document.getElementById('now-temp').textContent = `${fmtTemp(data.temperature, u)} ${loc ? '· ' + loc : ''}`;
+      document.getElementById('now-cond').textContent = data.condition || '';
+      document.getElementById('now-feels').textContent = fmtTemp(data.feels_like, u);
+      document.getElementById('now-humidity').textContent = `${data.humidity_percent == null ? '-' : data.humidity_percent + '%'}`;
+      document.getElementById('now-wind').textContent = data.wind_speed == null ? '' : `${data.wind_speed} ${data.units.wind}`;
+    }
+
+    function renderForecast(data) {
+      const box = document.getElementById('forecast');
+      box.innerHTML = '';
+      for (const d of (data.days || [])) {
+        const div = document.createElement('div');
+        div.className = 'day';
+        div.innerHTML = `<div class="date">${d.date}</div>
+          <div class="hi">${fmtTemp(d.temp_max, data.units.temperature)} / ${fmtTemp(d.temp_min, data.units.temperature)}</div>
+          <div>${d.condition || ''}</div>
+          <div class="muted">${d.precip_chance_percent == null ? '' : d.precip_chance_percent + '% rain'}</div>`;
+        box.appendChild(div);
+      }
+    }
+
+    function renderRecommendation(data) {
+      const el = document.getElementById('recommendation');
+      document.getElementById('rec-date').textContent = data.date ? '· ' + data.date : '';
+      if (data.advice && data.advice.length) {
+        el.innerHTML = `<div class="advice"><strong>${data.location ? data.location.name : ''}</strong>
+          <ul>${data.advice.map(a => `<li>${a}</li>`).join('')}</ul></div>`;
+      } else {
+        el.innerHTML = '<div class="error">No recommendation available.</div>';
+      }
+    }
+
+    async function refreshRecent() {
+      const rows = await getJSON('/api/recent');
+      const body = document.getElementById('recent-body');
+      body.innerHTML = rows.map(r =>
+        `<tr><td>${r.when}</td><td>${r.location}</td><td>${r.kind}</td></tr>`).join('') ||
+        '<tr><td colspan="3" class="muted">No lookups yet - the agent&apos;s calls land on its own MCP app, this list tracks the dashboard.</td></tr>';
+    }
+
+    async function lookup() {
+      const location = encodeURIComponent(locEl.value.trim() || 'Chicago');
+      document.getElementById('error').innerHTML = '';
+      try {
+        const [current, forecast, rec, umbrella] = await Promise.all([
+          getJSON(`/api/current?location=${location}`),
+          getJSON(`/api/forecast?location=${location}&days=7`),
+          getJSON(`/api/recommendation?location=${location}&date=tomorrow`),
+          getJSON(`/api/umbrella?location=${location}&date=tomorrow`),
+        ]);
+        renderCurrent(current);
+        renderForecast(forecast);
+        renderRecommendation(rec);
+        const v = document.getElementById('umbrella-verdict');
+        v.textContent = (umbrella.umbrella_needed || 'n/a').toUpperCase();
+        v.className = 'verdict ' + (umbrella.umbrella_needed || '');
+        document.getElementById('umbrella-reason').textContent = umbrella.reason || '';
+        refreshRecent();
+      } catch (e) {
+        document.getElementById('error').innerHTML = `<div class="error">${e.message}</div>`;
+      }
+    }
+
+    document.getElementById('go').addEventListener('click', lookup);
+    locEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
+    lookup();
+  </script>
+</body>
+</html>

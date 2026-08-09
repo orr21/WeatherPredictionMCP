@@ -1,0 +1,7 @@
+command:
+  - "python"
+  - "app.py"
+
+env:
+  - name: WEATHER_DASHBOARD_CITY
+    value: "Chicago"
