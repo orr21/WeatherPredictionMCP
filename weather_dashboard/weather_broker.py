@@ -30,7 +30,7 @@ weather_mcp_server.py does not need to change.
 
 import logging
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 import requests

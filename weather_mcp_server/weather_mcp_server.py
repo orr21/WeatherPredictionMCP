@@ -41,10 +41,9 @@ Run locally:
 import logging
 import os
 
+import weather_broker
 from fastmcp import FastMCP
 from starlette.responses import JSONResponse
-
-import weather_broker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("weather-mcp-server")

@@ -15,11 +15,10 @@ Run locally:
 """
 
 import os
-from datetime import datetime
-
-from flask import Flask, jsonify, render_template, request
+from datetime import datetime, timezone
 
 import weather_broker
+from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 
@@ -117,7 +116,7 @@ def _record(location: str, kind: str):
     """Append a recent-lookup entry (cap the list)."""
     RECENT.append(
         {
-            "when": datetime.utcnow().isoformat() + "Z",
+            "when": datetime.now(timezone.utc).isoformat(),
             "location": location,
             "kind": kind,
         }

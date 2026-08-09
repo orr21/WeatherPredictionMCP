@@ -1,207 +1,229 @@
-# Day 3: Agent Bricks + an Alpaca Markets Paper-Trading MCP Server
+# Weather-Prediction MCP Server + Agent (Homework)
 
-Builds on [Day 2](../databricks-lakebase-app-day-2/README.md)'s Lakebase pattern. Day 3 adds:
+A from-scratch weather assistant built on the **Day 3 pattern** (Agent Bricks +
+an MCP server deployed as Databricks Apps), but with a completely different
+domain: instead of Alpaca paper-trading, this repo ships a **weather-prediction
+MCP server** backed by **Open-Meteo** (free, no API key), a **Databricks Agent
+Bricks agent** that answers natural-language weather questions through it, and
+an optional **dashboard** that mirrors the agent's tools.
 
-- An **Alpaca Markets paper-trading MCP server** (`mcp_server/`) - exposes paper-trading tools
-  (`get_quote`, `place_trade`, `get_positions`, `get_account_summary`, `get_order_history`)
-  over the Model Context Protocol, backed by a real Alpaca paper-trading account.
-- A **Databricks Agent Bricks agent** that connects to that MCP server as an external tool,
-  reads market data from your Lakebase Day 2 watchlist/news tables, and decides to place
-  paper trades against your real (but fake-money) Alpaca account.
-- A small **dashboard app** (`dashboard/`) to watch those trades land in near real time.
-
-> **Why Alpaca?** Alpaca Markets provides a free, real, hosted paper-trading environment with a
-> clean Python SDK ([alpaca-py](https://alpaca.markets/sdks/python/)) and no lengthy manual app
-> approval process, so students get real market data and real (simulated-money) order fills
-> without any risk of real money moving. See "Setting up Alpaca Markets" below to create your
-> paper account and API keys.
+> The original Day 3 Alpaca repo is preserved as
+> [`REFERENCE_DAY3_ALPACA.md`](REFERENCE_DAY3_ALPACA.md) and the Alpaca app
+> code is still in `mcp_server/` + `dashboard/` for comparison. Everything new
+> for this submission lives in `weather_mcp_server/` and `weather_dashboard/`.
 
 ## Architecture
 
 ```
-Agent Bricks agent  --(MCP tool calls)-->  mcp_server/alpaca_mcp_server.py  --(REST)-->  Alpaca Markets (paper)
-        ^                                                                                     
-        | (reads context: watchlist, ticker_news_* from Day 2 Lakebase)                        
-        +-----------------------------------------------------------------------------------+
-                                                                                              |
-                                        dashboard/app.py  <--(reads same Alpaca account)------+
+Agent Bricks agent  --(MCP tool calls)-->  weather_mcp_server/weather_mcp_server.py  --(REST)-->  Open-Meteo
+        ^                                      |   FastMCP, streamable HTTP                    + Geocoding API
+        | (system prompt: see agent_system_prompt.md)                                          (no key, no signup)
+        |
+        +--------------------- weather_dashboard/app.py <-- (reuses weather_broker.py) -------------+
 ```
 
-- `mcp_server/` and `dashboard/` are **two separate Databricks Apps** - one serves MCP tool
-  calls to the agent, the other serves a human-facing dashboard. Both read/write the exact same
-  Alpaca paper-trading account (via their own copy of `alpaca_broker.py`), so trades placed by
-  the agent through MCP show up in the dashboard immediately, and vice versa.
-- `mcp_server/alpaca_broker.py` is the broker adapter: it wraps `alpaca-py`'s `TradingClient`
-  (orders, positions, account info) and `StockHistoricalDataClient` (quotes) to implement the
-  5 functions the MCP tools call. There's no local simulation - quotes, fills, cash, and
-  positions all come straight from Alpaca's paper-trading API.
-- `mcp_server/alpaca_mcp_server.py` wraps `alpaca_broker.py` with [FastMCP](https://gofastmcp.com/)
-  `@mcp.tool` decorators and serves them over streamable HTTP - the transport Databricks'
-  MCP client/gateway expects when you [host your own MCP server as a Databricks App](https://docs.databricks.com/aws/en/agents/mcp-tools/custom-mcp).
-- Alpaca's paper trading is **one account per API key pair**, not multi-tenant - `account_id` is
-  accepted by every tool for signature compatibility but doesn't select between accounts; every
-  call operates against the single Alpaca paper account configured via secrets (see below).
+- `weather_mcp_server/` and `weather_dashboard/` are **two separate Databricks
+  Apps** - one serves MCP tool calls to the agent, the other serves a
+  human-facing UI. Both use their own copy of `weather_broker.py` (each
+  Databricks App deploys from its own folder, so shared code is duplicated,
+  exactly like Day 3's `alpaca_broker.py`).
+- `weather_broker.py` is the **broker adapter**: it owns every HTTP call and
+  all JSON parsing against Open-Meteo. The `@mcp.tool` functions in
+  `weather_mcp_server.py` are thin wrappers that just add error handling.
+- **No secrets, no API key.** Open-Meteo is key-less, so there is nothing to
+  store or configure - the same code runs locally and on Databricks Apps
+  unchanged. (If you later switch to a keyed provider like WeatherAPI.com,
+  follow the Day 3 `_secret()` / `WorkspaceClient().secrets.get_secret()`
+  pattern and never commit the key.)
 
 ## Files
 
-- `mcp_server/alpaca_mcp_server.py` - FastMCP server exposing the 5 paper-trading tools
-- `mcp_server/alpaca_broker.py` - Broker adapter wrapping Alpaca's `alpaca-py` SDK
-- `mcp_server/paper_broker.py` / `mcp_server/lakebase.py` - legacy Lakebase-simulated engine,
-  kept for reference/fallback only (no longer imported)
-- `mcp_server/app.yaml` / `mcp_server/requirements.txt` - Databricks App config for the MCP server
-- `dashboard/app.py` - Flask dashboard (read-only view of the Alpaca paper account)
-- `dashboard/templates/index.html` - Dashboard UI (cash, positions, P/L, recent orders)
-- `dashboard/alpaca_broker.py` - copy of the same broker adapter (each Databricks App deploys
-  from its own folder, so each needs its own copy of shared code)
-- `dashboard/paper_broker.py` / `dashboard/lakebase.py` - legacy Lakebase-simulated engine,
-  kept for reference/fallback only (no longer imported)
-- `dashboard/app.yaml` / `dashboard/requirements.txt` - Databricks App config for the dashboard
-- `setup_secrets.py` - One-time script to store the Lakebase URL secret (same as Day 2; still
-  used if you keep Day 2's watchlist/news tables for agent context)
-- `.env.example` - Local dev env var template
+- `weather_mcp_server/weather_broker.py` - broker/adapter: geocoding, current
+  conditions, forecasts, historical data, and the recommendation thresholds
+- `weather_mcp_server/weather_mcp_server.py` - FastMCP server (streamable
+  HTTP) exposing the 6 tools below
+- `weather_mcp_server/app.yaml` / `requirements.txt` - Databricks App config
+- `weather_mcp_server/agent_system_prompt.md` - **agent config**: tool list,
+  system prompt to paste into Agent Bricks, and guardrails
+- `weather_dashboard/app.py` + `templates/index.html` - Flask dashboard
+  (stretch): current weather, 7-day forecast, umbrella verdict, travel
+  recommendation, recent lookups
+- `weather_dashboard/weather_broker.py` - copy of the same broker adapter
+- `weather_dashboard/app.yaml` / `requirements.txt` - dashboard Databricks App
+  config
 
-## Setting up Alpaca Markets
+## Tools
 
-Both apps need an Alpaca **paper-trading** API key ID and secret key, stored as Databricks
-secrets (never committed to the repo).
+All tools return JSON dicts. On a bad location, out-of-range date, or API
+outage they return `{"error": "...", ...}` instead of raising, so the agent
+can relay a sensible message to the user.
 
-### 1. Create a free Alpaca account
+| Tool | Description |
+| ---- | ----------- |
+| `get_current_weather(location, units="celsius")` | Current temp, feels-like, condition, humidity, wind, gusts, pressure |
+| `get_forecast(location, days=7, units="celsius")` | Multi-day forecast: high/low, precipitation chance, condition, wind (1-16 days) |
+| `predict_umbrella_needed(location, date="today")` | Derived verdict **yes/maybe/no** + reason |
+| `get_travel_recommendation(location, date="today", units="celsius")` | Derived travel advice (jacket / heat / wind / rain) |
+| `get_historical_weather(location, date, units="celsius")` | Observed weather for a past date *(stretch)* |
+| `compare_weather(locations, date="today", units="celsius")` | Side-by-side outlook for several cities *(stretch)* |
 
-Sign up at [alpaca.markets](https://alpaca.markets/) (no funding or brokerage approval needed
-for paper trading - it's instant, unlike a real brokerage app).
+**Prediction logic** (implemented in `weather_broker.py`, documented in each
+tool's docstring - this is where reasoning happens, not a passthrough):
 
-### 2. Generate paper-trading API keys
+- Umbrella: precipitation probability **>= 70%** -> `yes`; **40-69%** ->
+  `maybe`; `< 40%` -> `no` (any precip weather code also flags `maybe`).
+- Travel advice: rain >= 40% umbrella, >= 70% heavy rain; max temp >= 32C
+  heat; min temp <= 5C cold; max temp <= 12C jacket; wind >= 40 km/h windy.
+- Dates are flexible: `today`, `tomorrow`, ISO `YYYY-MM-DD`, or a day offset.
 
-1. Log in to the [Alpaca dashboard](https://app.alpaca.markets/).
-2. Make sure you're viewing **Paper Trading** (there's a live/paper toggle in the dashboard) -
-   never use live-trading keys for this lab.
-3. Under **API Keys**, generate a new key pair. Copy the **Key ID** and **Secret Key**
-   immediately - the secret is only shown once.
+## Setup
 
-### 3. Store the keys as Databricks secrets
-
-From a Databricks notebook or the CLI, base64-encode and store both values (same pattern as
-the Lakebase URL secret):
-
-```bash
-databricks secrets put-secret database alpaca-key-id --string-value "$(echo -n YOUR_KEY_ID | base64)"
-databricks secrets put-secret database alpaca-secret-key --string-value "$(echo -n YOUR_SECRET_KEY | base64)"
-```
-
-If you use a different secret scope than `database`, update `ALPACA_SECRET_SCOPE` in both
-`mcp_server/app.yaml` and `dashboard/app.yaml` to match.
-
-### 4. (Local dev only) set the keys as environment variables
-
-For running the apps locally without Databricks secrets, `alpaca_broker.py` still reads through
-`WorkspaceClient().secrets.get_secret()`, so local runs need a Databricks CLI profile configured
-with access to the secret scope above (`databricks auth login`), or you can temporarily hardcode
-test keys - just never commit them.
-
-## Step-by-step setup
-
-### 1. Reuse (or create) your Lakebase instance from Day 2
-
-Lakebase is still used for agent context (Day 2's `watchlist`/`ticker_news_*` tables) even
-though trading now goes through Alpaca. If you already have a Lakebase instance from Day 2,
-reuse it. Otherwise, follow
-[Day 2's step 2](../databricks-lakebase-app-day-2/README.md#2-create-a-lakebase-instance-and-a-native-password-role)
-to create one.
-
-### 2. Store secrets
-
-- Lakebase URL: from a Databricks notebook (`%sh python setup_secrets.py`), same as Day 2.
-- Alpaca API keys: see "Setting up Alpaca Markets" above.
-
-### 3. Configure environment variables (local dev)
+### 1. Run the MCP server locally
 
 ```bash
-cp .env.example .env
-# paste your Lakebase URL into LAKEBASE_URL
+cd weather_mcp_server
+pip install -r requirements.txt
+python weather_mcp_server.py        # serves MCP on :8000 (set PORT to change)
 ```
 
-### 4. Install dependencies and run both apps locally
+Sanity-check with an MCP Inspector or `curl`:
 
 ```bash
-cd mcp_server && pip install -r requirements.txt && python alpaca_mcp_server.py   # serves MCP on :8000
+curl -s http://localhost:8000/healthz            # {"status":"ok"}
+curl -s http://localhost:8000/mcp                 # MCP streamable-http endpoint
 ```
 
-In a second terminal:
+### 2. Run the dashboard locally (optional)
 
 ```bash
-cd dashboard && pip install -r requirements.txt && python app.py                    # serves UI on :8001
+cd weather_dashboard
+pip install -r requirements.txt
+python app.py                       # serves UI on :8001
 ```
 
-Open `http://localhost:8001` to see your Alpaca paper account (starting cash, no positions
-yet). Use an [MCP Inspector](https://docs.databricks.com/aws/en/agents/mcp-tools/connect-clients)
-or `curl` against `http://localhost:8000` to sanity-check the tools before deploying.
+Open `http://localhost:8001`, type a city, and you'll see the same data and
+recommendations the agent produces.
 
-### 5. Deploy both apps to Databricks Apps
+### 3. Deploy both apps to Databricks Apps
 
-Following [Day 2's step 7](../databricks-lakebase-app-day-2/README.md#7-create-a-git-folder-in-databricks-and-deploy-the-app-no-cli-required)
-(Git folder + Apps UI, no CLI needed), but this time deploy **two** apps pointed at two
-different subfolders of the same Git folder:
+Follow the same Git-folder + Apps UI flow as Day 3 (no CLI required):
 
-1. Create a Git folder for this repo (once) as in Day 2.
-2. **Deploy the MCP server app**: Compute > Apps > Create app > Custom, name it e.g.
-   `alpaca-paper-mcp`, and point its source at the Git folder's `databricks-lakebase-app-day-3/mcp_server/`
-   subfolder (so it picks up `mcp_server/app.yaml`). Deploy it, then copy its app URL - you'll
-   register that URL as an external MCP server in step 6.
-3. **Deploy the dashboard app**: repeat, naming it e.g. `paper-trading-dashboard`, pointing at
-   `databricks-lakebase-app-day-3/dashboard/`. Deploy it and open its URL to confirm the
-   dashboard loads and shows your Alpaca account.
+1. Create a Git folder for this repo in your workspace.
+2. **Deploy the MCP server app**: Apps > Create app > Custom, name it e.g.
+   `weather-prediction-mcp`, point it at the repo's
+   `weather_mcp_server/` subfolder (picks up `app.yaml`). Deploy, then copy
+   its app URL.
+3. **Deploy the dashboard app**: repeat, name it e.g. `weather-dashboard`,
+   pointing at `weather_dashboard/`.
 
-### 6. Register the MCP server as an external MCP in your workspace
+### 4. Register the MCP server as an external MCP
 
-Follow [Connect agents to external MCPs and tools](https://docs.databricks.com/aws/en/agents/mcp-tools/connect-external):
+1. Workspace > **AI Gateway** > **MCPs** > **Add MCP**.
+2. Paste the `weather-prediction-mcp` app URL as the server endpoint
+   (streamable HTTP). Databricks introspects it and lists the 6 tools.
+3. Name it (e.g. `weather-prediction`) and grant your agent access via Unity
+   Catalog permissions if prompted.
 
-1. In your workspace, go to **AI Gateway** > **MCPs** > **Add MCP** (or **Register external MCP**).
-2. Paste the `alpaca-paper-mcp` app's URL from step 5 as the server endpoint (streamable HTTP).
-3. Give it a name (e.g. `alpaca-paper-trading`) and save. Databricks will introspect the
-   server and list the 5 tools (`get_quote`, `place_trade`, `get_positions`,
-   `get_account_summary`, `get_order_history`).
-4. Grant your Agent Bricks agent (created next) access to this MCP server via Unity Catalog
-   permissions, if prompted.
+### 5. Build the Agent Bricks agent
 
-### 7. Build the Agent Bricks agent
+1. Workspace > **Agents** > **Agent Bricks** > **Create agent** (Custom LLM).
+2. Under **Tools**, add the `weather-prediction` MCP server (all 6 tools).
+3. Paste the system prompt from
+   [`weather_mcp_server/agent_system_prompt.md`](weather_mcp_server/agent_system_prompt.md)
+   (Section 2). It tells the agent which tool to call in which order, to
+   resolve fuzzy dates to ISO before calling, and the guardrails that stop it
+   from hallucinating weather (never report a number that didn't come from a
+   tool; relay tool errors verbatim).
+4. Evaluate + iterate with Agent Bricks' auto-eval sample prompts, then deploy.
 
-1. In your workspace sidebar, go to **Agents** > **Agent Bricks** > **Create agent**.
-2. Choose the **Custom LLM** (or **Multi-agent supervisor**, if you want to combine this with a
-   research agent) agent type - either works for a single tool-calling agent like this.
-3. Under **Tools**, add:
-   - The `alpaca-paper-trading` MCP server you registered in step 6 (all 5 tools, or a
-     curated subset - e.g. leave out `place_trade` for a "research-only" version of the agent
-     first, then add it back once you trust the guardrails).
-   - Optionally, a **Unity Catalog function tool** or **Genie space** wired to your Day 2
-     `watchlist` / `ticker_news_documents` / `ticker_news_embeddings` tables, so the agent has
-     real context (tracked tickers + recent news/sentiment) to reason about before trading.
-4. Give the agent a system prompt along the lines of:
+## Demonstration
 
-   > You are a paper-trading research assistant. Use `get_account_summary` to check current
-   > cash/positions before proposing a trade. Use the watchlist/news tools to justify any BUY or
-   > SELL. Always call `get_quote` immediately before `place_trade` to confirm price. Only trade
-   > symbols already on the watchlist. Never exceed 10% of account equity in a single order.
-   > Explain your reasoning before calling `place_trade`.
+Verified against the live Open-Meteo API on 2026-08-09 (dates below are the
+real forecast dates). The MCP tool calls and their JSON responses are exactly
+what the agent sees; the "Answer" is what the agent writes from them.
 
-5. **Evaluate and iterate**: Agent Bricks auto-evaluates the agent against sample prompts (e.g.
-   "Check AAPL and buy 10 shares if sentiment is positive") - use this to tune the system prompt
-   and tool selection before enabling it for live chat.
-6. Deploy the agent and chat with it, e.g.: *"Look at my watchlist, check recent news sentiment,
-   and place a small paper trade if you find a good opportunity."* Watch the trade land on the
-   dashboard from step 5, and in your Alpaca paper-trading dashboard too.
+### Q1: "Will it rain in Chicago tomorrow?"
+
+> tool call: `predict_umbrella_needed(location="Chicago", date="tomorrow")`
+>
+> ```json
+> {"location": {"name": "Chicago", "region": "Illinois", "country": "United States"},
+>  "date": "2026-08-10", "precip_chance_percent": 38,
+>  "condition": "Slight rain showers",
+>  "umbrella_needed": "maybe",
+>  "reason": "Precipitation (Slight rain showers) is expected even though the probability is low - a compact umbrella helps."}
+> ```
+
+**Answer:** "Light showers are possible in Chicago tomorrow (38% chance), so
+there's a small chance of rain - a compact umbrella is a safe bet, but it won't
+be a washout."
+
+### Q2: "Should I bring a jacket to Austin this weekend?"
+
+> tool call: `get_travel_recommendation(location="Austin", date="2026-08-15")`
+>
+> ```json
+> {"location": {"name": "Austin", "region": "Texas", "country": "United States"},
+>  "date": "2026-08-15",
+>  "day_forecast": {"temp_max": 40.2, "temp_min": 26.2, "temperature_unit": "°C",
+>                   "precip_chance_percent": 1, "condition": "Overcast", "wind_max": 25.2},
+>  "umbrella_needed": "no",
+>  "advice": ["hot day - stay hydrated, wear sunscreen and a hat"]}
+> ```
+
+**Answer:** "No jacket needed for Austin this weekend - Saturday hits 40°C with
+a low of 26°C and essentially no rain. Skip the jacket, pack water and
+sunscreen, and stay hydrated."
+
+### Q3: "Which city is better for a picnic next Friday: Paris or London?"
+
+> tool call: `compare_weather(locations=["Paris", "London"], date="2026-08-14")`
+>
+> ```json
+> {"date": "2026-08-14", "count": 2, "results": [
+>   {"location": {"name": "Paris", "region": "Île-de-France Region", "country": "France"},
+>    "temp_max": 34.5, "temp_min": 22.0, "precip_chance_percent": 12,
+>    "condition": "Overcast", "wind_max": 15.8,
+>    "recommendation": "- hot day - stay hydrated, wear sunscreen and a hat"},
+>   {"location": {"name": "London", "region": "England", "country": "United Kingdom"},
+>    "temp_max": 30.1, "temp_min": 22.2, "precip_chance_percent": 21,
+>    "condition": "Mainly clear", "wind_max": 13.7,
+>    "recommendation": "- pleasant weather - no special gear needed"}]}
+> ```
+
+**Answer:** "London wins for a picnic: mainly clear skies, 21% rain chance, and
+a comfortable 30°C high - just pleasant. Paris will be a hot 34.5°C with
+overcast skies, so bring shade and water if you go there."
+
+### Q4 (error handling): "What's the weather in Blahville?"
+
+> tool call: `get_current_weather(location="Blahville")`
+>
+> ```json
+> {"error": "Could not resolve location 'Blahville'. Try a city name or town, e.g. 'Chicago' or 'Austin, Texas'.",
+>  "location": "Blahville"}
+> ```
+
+**Answer:** "I couldn't find a place called 'Blahville' - could you give me a
+city name or town instead?"
+
+### Paste your Databricks App URLs here
+
+- Weather MCP server app: `https://<your-workspace>.cloud.databricks.com/apps/weather-prediction-mcp`
+- Weather dashboard app: `https://<your-workspace>.cloud.databricks.com/apps/weather-dashboard`
+- (Paste screenshots of the Agent Bricks chat with the tool-call trace if you
+  can't share workspace access.)
 
 ## Notes
 
-- `mcp_server/` and `dashboard/` intentionally duplicate `alpaca_broker.py` rather than sharing
-  a package, because each Databricks App deploys independently from its own folder with its own
-  `app.yaml`/`requirements.txt` - there's no shared Python package install step across
-  Databricks Apps. If you prefer a single shared package, publish `alpaca_broker.py` to a
-  private PyPI index or wheel and add it to both `requirements.txt` files instead of
-  duplicating.
-- `place_trade` submits real orders against your real Alpaca **paper** account - fills use real
-  market prices, but no real money moves. Never point `alpaca_broker.py` at live-trading keys
-  for this lab.
-- The legacy `paper_broker.py` + `lakebase.py` Lakebase-simulated engine is still present in
-  both folders for reference, in case you want to compare a fully local simulation against
-  Alpaca's real paper-trading fills, or fall back to it if you don't want to create an Alpaca
-  account.
+- Open-Meteo is free for non-commercial use (~10k calls/day). No account, no
+  key, no secret management - the whole pipeline was built and tested with zero
+  credentials. See [open-meteo.com](https://open-meteo.com/) for limits.
+- Weather codes are mapped from the official WMO code table in
+  `weather_broker.py` (that's the "parsing" the adapter owns).
+- `weather_broker.py` is duplicated into `weather_dashboard/` because each
+  Databricks App deploys independently from its own folder - same tradeoff
+  documented in Day 3's README.
+- Stretch tools included: `get_historical_weather` (Open-Meteo Archive API)
+  and `compare_weather`. A NWS alerts tool is a natural follow-up if you want
+  US-only severe-weather alerts.
